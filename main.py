@@ -10,6 +10,7 @@ import pandas as pd
 import traceback
 from currency_converter import CurrencyConverter, ECB_URL
 import logging
+from collections import defaultdict
 
 class UtilityFunctions:
 	def __init__(self, currency_converter):
@@ -281,95 +282,68 @@ class Categorization:
 class Testing:
 
 	@staticmethod
+	def load_json_data(json_file_path):
+		try:
+			with open(json_file_path, 'r') as file:
+				return json.load(file)
+		except Exception as e:
+			print(f"An error occurred while loading JSON data from {json_file_path}: {str(e)}")
+			return []
+
+	@staticmethod
 	def check_categories_and_duplicates(json_file_path):
 		print(f"Checking file for conflicting categories: {json_file_path}")
-		try:
-			# Load the JSON data from the file
-			with open(json_file_path, 'r') as file:
-				data = json.load(file)
+		data = Testing.load_json_data(json_file_path)
 
-			keywords_to_main_categories = {}
-			keywords_to_sub_categories = {}
-			conflicting_categories = {}
+		keywords_to_main_categories = {}
+		keywords_to_sub_categories = {}
+		conflicting_categories = defaultdict(list)
 
-			for item in data:
-				keyword = item.get('Keyword')
-				main_category = item.get('Main Category')
-				sub_category = item.get('Sub Category')
+		for item in data:
+			keyword = item.get('Keyword')
+			main_category = item.get('Main Category')
+			sub_category = item.get('Sub Category')
 
-				if keyword is None:
-					continue
+			if keyword is None:
+				continue
 
-				if keyword in keywords_to_main_categories:
-					if keywords_to_main_categories[keyword] != main_category:
-						# This keyword has conflicting main categories
-						if keyword in conflicting_categories:
-							conflicting_categories[keyword].append(main_category)
-						else:
-							conflicting_categories[keyword] = [keywords_to_main_categories[keyword], main_category]
-					else:
-						# Main category matches, check sub-categories
-						if keyword in keywords_to_sub_categories:
-							if keywords_to_sub_categories[keyword] != sub_category:
-								# This keyword has conflicting sub-categories
-								if keyword in conflicting_categories:
-									conflicting_categories[keyword].append(sub_category)
-								else:
-									conflicting_categories[keyword] = [keywords_to_sub_categories[keyword], sub_category]
-						else:
-							# Store sub-category for this keyword
-							keywords_to_sub_categories[keyword] = sub_category
-
-				else:
-					# Store main category for this keyword
-					keywords_to_main_categories[keyword] = main_category
-
-			if conflicting_categories:
-				return conflicting_categories
+			# Handle main category conflicts
+			if keyword in keywords_to_main_categories and keywords_to_main_categories[keyword] != main_category:
+				conflicting_categories[keyword] += [keywords_to_main_categories[keyword], main_category]
 			else:
-				return {}
+				keywords_to_main_categories[keyword] = main_category
 
-		except Exception as e:
-			print(f"An error occurred in check_categories_and_duplicates: {str(e)}")
-			return {}
+			# Handle sub-category conflicts
+			if keyword in keywords_to_sub_categories and keywords_to_sub_categories[keyword] != sub_category:
+				conflicting_categories[keyword] += [keywords_to_sub_categories[keyword], sub_category]
+			else:
+				keywords_to_sub_categories[keyword] = sub_category
 
-		
+		return dict(conflicting_categories)
+
 	@staticmethod
 	def find_redundant_keywords(json_file_path):
 		print(f"Checking file for redundant keywords: {json_file_path}")
+		data = Testing.load_json_data(json_file_path)
 
-		try:
-			# Load the JSON data from the file
-			with open(json_file_path, 'r') as file:
-				data = json.load(file)
+		keywords_count = defaultdict(list)
+		redundant_keywords = defaultdict(list)
 
-			keywords_count = {}
-			redundant_keywords = {}
+		for item in data:
+			keyword = item.get('Keyword')
+			if keyword is None:
+				continue
 
-			for item in data:
-				keyword = item.get('Keyword')
+			# Increase count or mark as redundant
+			if keyword in keywords_count:
+				redundant_keywords[keyword].append(item)
+			keywords_count[keyword].append(item)
 
-				if keyword is None:
-					continue
 
-				if keyword in keywords_count:
-					# This keyword is redundant
-					if keyword in redundant_keywords:
-						redundant_keywords[keyword].append(item)
-					else:
-						redundant_keywords[keyword] = [keywords_count[keyword], item]
-					keywords_count[keyword].append(item)  # Store all occurrences of the same keyword
-				else:
-					keywords_count[keyword] = [item]
+		# Only return keywords that are redundant (appear more than once)
+		redundant_keywords = {k: v for k, v in redundant_keywords.items() if len(v) > 1}
 
-			if redundant_keywords:
-				return redundant_keywords
-			else:
-				return {}
-
-		except Exception as e:
-			print(f"An error occurred in find_redundant_keywords: {str(e)}")
-			return {}
+		return redundant_keywords
 
 class DataTransformer:
 	def __init__(self, output_file_path):
