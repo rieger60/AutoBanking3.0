@@ -11,10 +11,6 @@ import traceback
 from currency_converter import CurrencyConverter, ECB_URL
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, filename='app.log', filemode='a',
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
 class UtilityFunctions:
 	def __init__(self, currency_converter):
 		self.currency_converter = currency_converter
@@ -106,20 +102,27 @@ class DataImport:
 
 
 	def load_Wise(self):
-		df = pd.read_csv(self.file_path, delimiter=',', encoding='utf-8')
-		valid_rows = (df['Status'] != 'CANCELLED') & (df['Target amount (after fees)'] != 0) & (df['Source amount (after fees)'] != 0)
+		df = pd.read_csv(self.file_path, 
+						 delimiter=',', 
+						 encoding='utf-8')
+		valid_rows = (df['Status'] != 'CANCELLED') & \
+					 (df['Target amount (after fees)'] != 0) & \
+					 (df['Source amount (after fees)'] != 0)
 		df = df[valid_rows]
 
-		df['Date'] = pd.to_datetime(df['Finished on'], format='%Y-%m-%d %H:%M:%S').dt.strftime('%d-%m-%Y')
+		df['Date'] = pd.to_datetime(df['Finished on'], 
+									format='%Y-%m-%d %H:%M:%S').dt.strftime('%d-%m-%Y')
 		
 		df['Description'] = df.apply(
 			lambda row: row['Source name'] if row['Direction'] == 'IN' else (
 				row['Target name'] if row['Direction'] == 'OUT' else 'Internal transfer'),
 				axis=1)
-		df['Amount_currency'] = df.apply(lambda row: row['Source amount (after fees)'] if row['Direction'] == 'IN' else (
+		df['Amount_currency'] = df.apply(
+			lambda row: row['Source amount (after fees)'] if row['Direction'] == 'IN' else (
 			row['Target amount (after fees)'] * -1 if row['Direction'] == 'OUT' else 0), 
 			axis=1)
-		df['Currency'] = df.apply(lambda row: row['Source currency'] if row['Direction'] == 'IN' else (
+		df['Currency'] = df.apply(
+			lambda row: row['Source currency'] if row['Direction'] == 'IN' else (
 			row['Target currency'] if row['Direction'] == 'OUT' else row['Target currency']), 
 			axis=1)
 
@@ -133,49 +136,66 @@ class DataImport:
 
 		self._common_preprocessing(df)
 		
-		selected_columns = ['Date', 'Description', 'Amount', 'Amount_currency', 'Currency', 'Currency_Rate', 'Bank', 'UniqueID']
-		df_selected = df[selected_columns]
-
-		self.data = df_selected.to_dict(orient='records')
+		selected_columns = ['Date', 'Description', 'Amount', 'Amount_currency', 
+							'Currency', 'Currency_Rate', 'Bank', 'UniqueID']
+		self.data = df[selected_columns].to_dict(orient='records')
 
 	def load_Norwegian(self):
-		df = pd.read_excel(self.file_path)
-		df = df.rename(columns={'TransactionDate': 'Date', 'Text': 'Description',
-								'Amount': 'Amount', 'Type': 'Type', 'Currency Amount': 'Amount_currency', 
-								'Currency Rate': 'Currency_Rate'})
-		df['Date'] = pd.to_datetime(df['Date'], format='%d.%m.%Y').dt.strftime('%d-%m-%Y')
+		columns_to_read = {
+			'TransactionDate': 'Date',
+			'Text': 'Description',
+			'Amount': 'Amount',
+			'Type': 'Type',
+			'Currency Amount': 'Amount_currency',
+			'Currency': 'Currency',
+			'Currency Rate': 'Currency_Rate'
+		}
+		df = pd.read_excel(self.file_path, usecols=list(columns_to_read.keys()))
+		df = df.rename(columns=columns_to_read)
+
+		df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%d-%m-%Y')
+		if df['Date'].isnull().any():
+			logging.warning(f"Some dates in {self.file_path} could not be parsed.")
+
 		self._common_preprocessing(df)
 		df['Bank'] = 'Norwegian'
-		selected_columns = ['Date', 'Description', 'Amount', 'Type', 'Amount_currency', 'Currency', 'Currency_Rate', 'UniqueID', 'Bank']
-		df_selected = df[selected_columns]
-		df_selected = df_selected[df_selected['Type'] != "Reserveret"]
-		df_selected = df_selected.drop('Type', axis=1)
-
-		self.data = df_selected.to_dict(orient='records')
+		
+		df = df[df['Type'] != "Reserveret"]
+		selected_columns = ['Date', 'Description', 'Amount', 'Amount_currency', 
+							'Currency', 'Currency_Rate', 'UniqueID', 'Bank']	
+		self.data = df[selected_columns].to_dict(orient='records')
 
 	def load_Forbrugsforeningen(self):
 		pdf_file = self.file_path
-		dfs = tabula.read_pdf(pdf_file, pages='all', multiple_tables=True, encoding='utf-8')
-		extracted_df = pd.DataFrame()
+		pdf_dfs = tabula.read_pdf(pdf_file, pages='all', multiple_tables=True, encoding='utf-8')
+		concatenated_dfs = []
 
-		for df in dfs:
-			if 'Dato' in df.columns:
-				extracted_df = pd.concat([extracted_df, df], ignore_index=True)
-		# Manipulate on pd.df
-		extracted_df = extracted_df.rename(columns={'Dato': 'Date', 'Posteringstekst': 'Description', 'Beløb': 'Amount', 'Valuta': 'Currency'})
-		extracted_df['Date'] = pd.to_datetime(extracted_df['Date'], format='%d/%m/%Y').dt.strftime('%d-%m-%Y')
-		extracted_df['Amount'] = extracted_df['Amount'].str.replace('.', '').str.replace(',', '.', regex=False).astype(float)
-		# Create unique identifier
+		for single_df in pdf_dfs:
+			if {'Dato', 'Posteringstekst', 'Beløb', 'Valuta'}.issubset(single_df.columns):
+				renamed_df = single_df.rename(columns={
+					'Dato': 'Date',
+					'Posteringstekst': 'Description',
+					'Beløb': 'Amount',
+					'Valuta': 'Currency'
+				})
+				concatenated_dfs.append(renamed_df)
+
+		if not concatenated_dfs:
+			logging.warning(f"No data was extracted from {pdf_file}")
+			return pd.DataFrame()
+
+		df = pd.concat(concatenated_dfs, ignore_index=True)
+		df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y').dt.strftime('%d-%m-%Y')
+		df['Amount'] = df['Amount'].str.replace('.', '').str.replace(',', '.', regex=False).astype(float)
 		self._common_preprocessing(df)
-		# Create bank identifier
-		extracted_df['Bank'] = 'Forbrugsforeningen'
-		extracted_df['Amount_currency'] = extracted_df['Amount']
-		extracted_df['Currency_Rate'] = 1
+		df['Bank'] = 'Forbrugsforeningen'
+		df['Amount_currency'] = df['Amount']
+		df['Currency_Rate'] = 1
         
-		selected_columns = ['Date', 'Description', 'Amount', 'Amount_currency', 'Currency', 'Currency_Rate', 'Bank', 'UniqueID']
-		df_selected = extracted_df[selected_columns]
+		selected_columns = ['Date', 'Description', 'Amount', 'Amount_currency', 
+							'Currency', 'Currency_Rate', 'Bank', 'UniqueID']
 
-		self.data = df_selected.to_dict(orient='records')
+		self.data = df[selected_columns].to_dict(orient='records')
 
 
 class Categorization:
@@ -190,10 +210,10 @@ class Categorization:
 				categorization_rules = json.load(json_file)
 			return categorization_rules
 		except FileNotFoundError:
-			print(f"File not found: {self.categorization_rules_path}")
+			logging.error(f"File not found: {self.categorization_rules_path}")
 			return []
 		except Exception as e:
-			print(f"An error occurred: {str(e)}")
+			logging.error(f"An error occurred: {str(e)}")
 			return []
 
 	def append_categorization_rules(self, new_rules):
@@ -204,7 +224,7 @@ class Categorization:
 				json.dump(self.categorization_rules, json_file, indent=4)
 			print(f"Categorization rules appended to {self.categorization_rules_path}")
 		except Exception as e:
-			print(f"An error occurred: {str(e)}")
+			logging.error(f"An error occurred: {str(e)}")
 
 	def categorize_transactions(self, transactions):
 		categorized_transactions = []
@@ -394,12 +414,51 @@ class DataTransformer:
 		except Exception as e:
 			print(f"An error occurred in process_and_export_data: {str(e)}")
 
+	def backup_csv_file(self):
+		try:
+			# Check if the output file exists
+			if not os.path.isfile(self.output_file_path):
+			    print(f"CSV file '{self.output_file_path}' does not exist. Skipping backup.")
+			    return
+
+			# Check if the output file is empty
+			if os.path.getsize(self.output_file_path) == 0:
+			    print(f"CSV file '{self.output_file_path}' is empty. Skipping backup.")
+			    return
+
+			# Create a 'backup' subfolder in the directory containing the output file, if it doesn't exist
+			backup_folder = os.path.join(os.path.dirname(self.output_file_path), 'backup')
+			if not os.path.exists(backup_folder):
+				os.makedirs(backup_folder)
+
+			# Extract the filename and extension from the output file path
+			file_name = os.path.basename(self.output_file_path)
+			name, ext = os.path.splitext(file_name)
+
+			# Create a backup file name by adding a timestamp to the original file name
+			backup_file_name = f'{name}_backup_{time.strftime("%Y%m%d%H%M%S")}{ext}'
+			backup_file_path = os.path.join(backup_folder, backup_file_name)
+
+			# Copy the original CSV file to the backup location
+			shutil.copyfile(self.output_file_path, backup_file_path)
+
+			print(f"Backup created: {backup_file_path}")
+		except Exception as e:
+			print(f"An error occurred while creating a backup: {str(e)}")
+
+
+def configure_logging():
+    logging.basicConfig(level=logging.INFO, filename='app.log', filemode='a',
+                        format='%(asctime)s - %(levelname)s - %(message)s')
 
 def main():	
-	file_path = 'C:/Users/smrie/Downloads/L¦nkonto-3643468492-20231219.csv'
-	bank = 'Danske Bank'
+	configure_logging()
+	file_path = 'C:/Users/smrie/Downloads/transaction-history.csv'
+	bank = 'Wise'
 	categorization_rules_path = 'categorization_rules.json'
 	output_file_path = 'output.csv'
+	data_transformer = DataTransformer(output_file_path=output_file_path)
+	data_transformer.backup_csv_file()
 	currency_converter_instance = CurrencyConverter(ECB_URL, fallback_on_wrong_date=True, fallback_on_missing_rate=True)
 	importer = DataImport(file_path, bank, currency_converter=currency_converter_instance)
 	try:
@@ -425,14 +484,9 @@ def main():
 		print("Reduntant keywords:", reduntant_keywords)
 
 	except ValueError as e:
-		print(e)
+		logging.error(e)
 	except Exception as e:
-		exception_type = type(e).__name__  # Get the name of the exception type
-    	# Extract and format the traceback
-		traceback_details = ''.join(traceback.format_exception(etype=type(e), value=e, tb=e.__traceback__))
-    
-    	# Now you can print it out or even better -- log to a file or logging system
-		print(f"An exception of type {exception_type} occurred. Details:\n{traceback_details}")
+		logging.error("An unexpected exception occurred.", exc_info=True)
 
 if __name__ == "__main__":
 	main()
