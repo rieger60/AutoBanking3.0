@@ -49,7 +49,8 @@ class DataImport:
 			'Danske Bank': self.load_DanskeBank,
 			'Wise': self.load_Wise,
 			'Norwegian': self.load_Norwegian,
-			'Forbrugsforeningen': self.load_Forbrugsforeningen
+			'Forbrugsforeningen': self.load_Forbrugsforeningen,
+			'Lunar': self.load_Lunar
 		}
 
 	def load_data(self):
@@ -61,15 +62,54 @@ class DataImport:
 
 	def _common_preprocessing(self, df):
 		df['UniqueID'] = df.apply(lambda row: 
-			hashlib.md5(f"{row['Date']}_{row['Description']}_{row['Amount']}_{row.get('Saldo', '')}".encode()).hexdigest(), 
+			hashlib.md5(f"{row['Date']}_{row['Description']}_{row['Amount']}_{row['UniqueCol']}".encode()).hexdigest(), 
 			axis=1
 			)
+
+	def load_Lunar(self):
+		dtype_map = {
+			'Dato': 'Date',
+			'Tekst': 'Description',
+			'Beløb': 'Amount',
+			'Tid': 'UniqueCol'
+		}
+
+		df = pd.read_csv(
+			self.file_path,
+			delimiter=',',
+			encoding='utf-8',
+			usecols=list(dtype_map.keys())
+		)
+
+		df = df.rename(columns=dtype_map)
+
+		df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d').dt.strftime('%d-%m-%Y')
+		df['Amount'] = (
+			df['Amount'].str.replace('.', '', regex=False)
+			.str.replace(',', '.', regex=False)
+			.astype(float)
+		)
+
+		df['Bank'] = 'Lunar'
+		df['Amount_currency'] = df['Amount']
+		df['Currency'] = 'DKK'
+		df['Currency_Rate'] = 1
+
+		self._common_preprocessing(df)
+
+		selected_columns = [
+			'Date', 'Description', 'Amount', 'Amount_currency', 
+			'Currency', 'Currency_Rate', 'Bank', 'UniqueID'
+		]
+		self.data = df[selected_columns].to_dict(orient='records')
 
 	def load_DanskeBank(self):
 		dtype_map = {
 			'Dato': 'Date',
 			'Tekst': 'Description',
-			'Beløb': 'Amount'
+			'Beløb': 'Amount',
+			'Saldo': 'UniqueCol',
+			'Status': 'Status'
 		}
 
 		df = pd.read_csv(
@@ -78,6 +118,9 @@ class DataImport:
 			encoding='ISO-8859-1',
 			usecols=list(dtype_map.keys())
 		)
+
+		df = df[df['Status'] != 'Slettet']
+		df = df[df['Status'] != 'Venter']
 
 		df = df.rename(columns=dtype_map)
 
@@ -130,6 +173,9 @@ class DataImport:
     	# Create bank identifier
 		df['Bank'] = 'Wise'
 
+		#Create UniqueCol
+		df['UniqueCol'] = df['ID']
+ 
 		#create DKK_rate
 		utility_functions_instance = UtilityFunctions(self.currency_converter)
 		df['Amount'] = df.apply(utility_functions_instance.calculate_target_currency_rate, axis=1)
@@ -158,6 +204,8 @@ class DataImport:
 		if df['Date'].isnull().any():
 			logging.warning(f"Some dates in {self.file_path} could not be parsed.")
 
+		#Create UniqueCol
+		df['UniqueCol'] = df['Type']
 		self._common_preprocessing(df)
 		df['Bank'] = 'Norwegian'
 		
@@ -172,12 +220,13 @@ class DataImport:
 		concatenated_dfs = []
 
 		for single_df in pdf_dfs:
-			if {'Dato', 'Posteringstekst', 'Beløb', 'Valuta'}.issubset(single_df.columns):
+			if {'Dato', 'Posteringstekst', 'Beløb', 'Valuta', 'Saldo'}.issubset(single_df.columns):
 				renamed_df = single_df.rename(columns={
 					'Dato': 'Date',
 					'Posteringstekst': 'Description',
 					'Beløb': 'Amount',
-					'Valuta': 'Currency'
+					'Valuta': 'Currency',
+					'Saldo': 'UniqueCol'
 				})
 				concatenated_dfs.append(renamed_df)
 
@@ -427,8 +476,8 @@ def configure_logging():
 
 def main():	
 	configure_logging()
-	file_path = 'C:/Users/smrie/Downloads/transaction-history.csv'
-	bank = 'Wise'
+	file_path = 'C:/Users/smrie/Downloads/eksport.pdf'
+	bank = 'Forbrugsforeningen'
 	categorization_rules_path = 'categorization_rules.json'
 	output_file_path = 'output.csv'
 	data_transformer = DataTransformer(output_file_path=output_file_path)
